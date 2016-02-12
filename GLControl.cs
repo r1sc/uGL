@@ -7,7 +7,7 @@ using System.Windows.Forms;
 
 namespace ugl
 {
-    public class GLForm : Form
+    public class GLControl : Control
     {
         #region Win32
         private struct PIXELFORMATDESCRIPTOR
@@ -40,9 +40,26 @@ namespace ugl
             public Int32 dwDamageMask;
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        public struct NativeMessage
+        {
+            public IntPtr handle;
+            public UInt32 msg;
+            public IntPtr wParam;
+            public IntPtr lParam;
+            public UInt64 time;
+            public Point p;
+        }
+
+
         private const int PFD_SUPPORT_OPENGL = 0x00000020;
         private const int PFD_DOUBLEBUFFER = 0x00000001;
-        public const uint GL_FRAGMENT_SHADER = 0x8B30;
+        public const int GL_FRAGMENT_SHADER = 0x8B30;
+        public const uint WM_PAINT = 0x000F;
+        public const uint WM_CREATE = 0x0001;
+        public const uint WM_QUIT = 0x0012;
+        public const uint WM_CLOSE = 0x0010;
+        public const uint WM_DESTROY = 0x002;
 
         [DllImport("gdi32.dll")]
         private static extern int ChoosePixelFormat(IntPtr hdc, [In] ref PIXELFORMATDESCRIPTOR ppfd);
@@ -50,6 +67,11 @@ namespace ugl
         private static extern bool SetPixelFormat(IntPtr hdc, int iPixelFormat, ref PIXELFORMATDESCRIPTOR ppfd);
         [DllImport("gdi32.dll")]
         private static extern bool SwapBuffers(IntPtr hdc);
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        static extern bool PeekMessage(out NativeMessage lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
+        [DllImport("user32.dll")]
+        static extern IntPtr DispatchMessage([In] ref NativeMessage lpmsg);
         #endregion
 
         #region OpenGL
@@ -74,6 +96,9 @@ namespace ugl
         public delegate void delGlLinkProgram(uint program);
         public delegate void delGlUseProgram(uint program);
         public delegate void delGlGetShaderInfoLog(uint shader, int maxLength, out int length, StringBuilder infoLog);
+        public delegate int delGlGetUniformLocation(uint program, string name);
+        public delegate int delGlUniform1f(int location, float v0);
+        public delegate int delGlUniform2f(int location, float v0, float v1);
 
         public static delGlCreateProgram glCreateProgram;
         public static delGlCreateShader glCreateShader;
@@ -83,6 +108,13 @@ namespace ugl
         public static delGlLinkProgram glLinkProgram;
         public static delGlUseProgram glUseProgram;
         public static delGlGetShaderInfoLog glGetShaderInfoLog;
+        public static delGlGetUniformLocation glGetUniformLocation;
+        public static delGlUniform1f glUniform1f;
+        public static delGlUniform2f glUniform2f;
+
+        private IntPtr _hdc;
+        private IntPtr _glContext;
+        private TimeSpan _start;
 
         private static void GetGLFuncs()
         {
@@ -94,6 +126,9 @@ namespace ugl
             glLinkProgram = (delGlLinkProgram)Marshal.GetDelegateForFunctionPointer(wglGetProcAddress("glLinkProgram"), typeof(delGlLinkProgram));
             glUseProgram = (delGlUseProgram)Marshal.GetDelegateForFunctionPointer(wglGetProcAddress("glUseProgram"), typeof(delGlUseProgram));
             glGetShaderInfoLog = (delGlGetShaderInfoLog)Marshal.GetDelegateForFunctionPointer(wglGetProcAddress("glGetShaderInfoLog"), typeof(delGlGetShaderInfoLog));
+            glGetUniformLocation = (delGlGetUniformLocation)Marshal.GetDelegateForFunctionPointer(wglGetProcAddress("glGetUniformLocation"), typeof(delGlGetUniformLocation));
+            glUniform1f = (delGlUniform1f)Marshal.GetDelegateForFunctionPointer(wglGetProcAddress("glUniform1f"), typeof(delGlUniform1f));
+            glUniform2f = (delGlUniform2f)Marshal.GetDelegateForFunctionPointer(wglGetProcAddress("glUniform2f"), typeof(delGlUniform2f));
         }
 
         public static string GetShaderLog(uint shader)
@@ -105,40 +140,34 @@ namespace ugl
         }
         #endregion
 
-        public GLForm()
+        public GLControl()
         {
-            var g = CreateGraphics();
-            var dc = g.GetHdc();
+            Running = true;
+            var g = Graphics.FromHwnd(Handle);
+            _hdc = g.GetHdc();
             var pfd = new PIXELFORMATDESCRIPTOR { dwFlags = PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER };
-            var pf = ChoosePixelFormat(dc, ref pfd);
-            SetPixelFormat(dc, pf, ref pfd);
-            var context = wglCreateContext(dc);
-            wglMakeCurrent(dc, context);
-            g.ReleaseHdc(dc);
+            var pf = ChoosePixelFormat(_hdc, ref pfd);
+            SetPixelFormat(_hdc, pf, ref pfd);
+            _glContext = wglCreateContext(_hdc);
+            wglMakeCurrent(_hdc, _glContext);
 
             GetGLFuncs();
-            Show();
+            _start = DateTime.Now.TimeOfDay;
         }
-
+        
         protected override void OnResize(EventArgs e)
         {
             base.OnResize(e);
             glViewport(0, 0, ClientRectangle.Width, ClientRectangle.Height);
         }
-        
-        public void Render(Action renderFunc)
+
+        public void Update(Action<float> renderFunc)
         {
-            while (Visible)
-            {
-                renderFunc();
-                using (var graphics = CreateGraphics())
-                {
-                    var hdc = graphics.GetHdc();
-                    SwapBuffers(hdc);
-                    graphics.ReleaseHdc(hdc);
-                }
-                Application.DoEvents();
-            }
+            var timeSinceStart = DateTime.Now.TimeOfDay - _start;
+            renderFunc((float) timeSinceStart.TotalSeconds);
+            SwapBuffers(_hdc);
         }
+
+        public bool Running { get; set; }
     }
 }
